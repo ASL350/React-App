@@ -1,0 +1,105 @@
+name: Deploy to Cloudzilla
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE_PREFIX: registry.cloudzilla.ai/rc-project-5100d159/
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: https://registry.cloudzilla.ai/
+          username: 'robot$rc-project-5100d159+imageuser'
+          password: '${{ secrets.DOCKER_PASSWORD }}'
+
+      - name: downcase REPO
+        run: |
+          image="${GITHUB_REPOSITORY#*/}"
+          echo "IMAGE_NAME=${image,,}" >>${GITHUB_ENV}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.IMAGE_PREFIX }}${{ env.IMAGE_NAME }}
+
+      - name: Put down .env file
+        run: |
+          echo "writing .env file..."
+          echo "# This file is generated or updated by the cloudzilla deploy workflow" >> .env
+          # remove duplicates keeping the items at the bottom of the file
+          tac .env | awk -F'=' '!seen[$1]++' | tac > .env.tmp2 && mv .env.tmp2 .env
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Deploy on Section
+        env:
+          SECTION_K8S_API_URL: '${{ secrets.SECTION_K8S_API_URL }}'
+          SECTION_API_TOKEN: '${{ secrets.SECTION_API_TOKEN }}'
+          DOCKER_SERVER: 'registry.cloudzilla.ai'
+          DOCKER_USERNAME: 'robot$rc-project-5100d159+imageuser'
+          DOCKER_PASSWORD: '${{ secrets.DOCKER_PASSWORD }}'
+          FULL_IMAGE_WITH_TAG: '${{ env.DOCKER_METADATA_OUTPUT_TAGS }}'
+          POD_NAME: '${{ env.IMAGE_NAME }}'
+          DEBUG: 1
+        run: |
+          #!/bin/bash
+          test -z "${DEBUG}" || set -o xtrace
+          set -o errexit
+
+          cd "$(dirname "$0")"
+
+          cert=/etc/ssl/certs/ca-certificates.crt
+
+          main() {
+            setCluster
+
+            kubectl create secret generic console-project-env-secret --from-env-file=${GITHUB_WORKSPACE}/.env --dry-run=client -o yaml | kubectl apply -f -
+            kubectl create secret docker-registry regcred --docker-server="${DOCKER_SERVER}" --docker-username="${DOCKER_USERNAME}" --docker-password="${DOCKER_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f -
+            kubectl apply -f ${GITHUB_WORKSPACE}/k8s/ingress-upstream.yaml
+            envsubst '$FULL_IMAGE_WITH_TAG $POD_NAME' < ${GITHUB_WORKSPACE}/k8s/deploy.yaml | kubectl apply -f -
+            kubectl rollout restart deployment "section-project-deployment"
+           
+          }
+
+          setCluster() {
+            # Configure kubectl to talk to Section
+            
+            # change the cert path depending on OS.
+            if [[ "$OSTYPE" == "darwin"* ]]; then
+              cert=/usr/local/etc/ca-certificates/cert.pem
+            fi
+
+            kubectl config set-cluster section \
+            --server=$SECTION_K8S_API_URL \
+            --certificate-authority=$cert
+
+            kubectl config set-credentials section-user --token=$SECTION_API_TOKEN
+
+            kubectl config set-context my-section-application --cluster=section --user=section-user --namespace=default
+
+            kubectl config use-context my-section-application
+
+            kubectl version
+          }
+          main
+          "$@"
