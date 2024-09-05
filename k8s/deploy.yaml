@@ -18,9 +18,6 @@ spec:
         - name: console-project
           image: $FULL_IMAGE_WITH_TAG
           imagePullPolicy: Always
-          envFrom:
-            - secretRef:
-                name: console-project-env-secret
           resources:
             limits:
               cpu: 2000m
