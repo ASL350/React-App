@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_PREFIX: registry.cloudzilla.ai/rc-project-5e510825/
+  IMAGE_PREFIX: registry.cloudzilla.ai/rc-project-0710a03365/
 
 jobs:
   build-push:
@@ -22,7 +22,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: https://registry.cloudzilla.ai/
-          username: 'robot$rc-project-5e510825+imageuser'
+          username: 'robot$rc-project-0710a03365+imageuser'
           password: '${{ secrets.DOCKER_PASSWORD }}'
 
       - name: downcase REPO
@@ -36,6 +36,38 @@ jobs:
         with:
           images: ${{ env.IMAGE_PREFIX }}${{ env.IMAGE_NAME }}
 
+      - name: Valiate existing .env file
+        run: |
+          # Path to your .env file
+          ENV_FILE=".env"
+          # Check if the .env file exists
+          if [ ! -f "$ENV_FILE" ]; then
+              # If the .env file doesn't exist, exit the script
+              exit 0
+          fi
+
+          # Read the .env file line by line
+          while IFS= read -r line || [ -n "$line" ]; do
+              # Remove leading and trailing whitespace
+              line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+
+              # Skip empty lines
+              if [ -z "$line" ]; then
+                  continue
+              fi
+
+              # Skip comment lines starting with #
+              if [[ "$line" == \#* ]]; then
+                  continue
+              fi
+
+              # Check if the line matches KEY=VALUE format
+              if ! [[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*=.*$ ]]; then
+                  echo "Your existing .env file is not valid. Environment variable names (keys) must consist solely of letters, digits, and the underscore ( _ ) and must not begin with a digit according to the .env file specification"
+                  exit 1
+              fi
+          done < "$ENV_FILE"
+
       - name: Put down .env file
         run: |
           echo "writing .env file..."
@@ -48,6 +80,7 @@ jobs:
         with:
           context: .
           push: true
+          file: .github/workflows/cloudzilla/Dockerfile
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -56,7 +89,7 @@ jobs:
           SECTION_K8S_API_URL: '${{ secrets.SECTION_K8S_API_URL }}'
           SECTION_API_TOKEN: '${{ secrets.SECTION_API_TOKEN }}'
           DOCKER_SERVER: 'registry.cloudzilla.ai'
-          DOCKER_USERNAME: 'robot$rc-project-5e510825+imageuser'
+          DOCKER_USERNAME: 'robot$rc-project-0710a03365+imageuser'
           DOCKER_PASSWORD: '${{ secrets.DOCKER_PASSWORD }}'
           FULL_IMAGE_WITH_TAG: '${{ env.DOCKER_METADATA_OUTPUT_TAGS }}'
           POD_NAME: '${{ env.IMAGE_NAME }}'
@@ -75,8 +108,8 @@ jobs:
 
             kubectl create secret generic console-project-env-secret --from-env-file=${GITHUB_WORKSPACE}/.env --dry-run=client -o yaml | kubectl apply -f -
             kubectl create secret docker-registry regcred --docker-server="${DOCKER_SERVER}" --docker-username="${DOCKER_USERNAME}" --docker-password="${DOCKER_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f -
-            kubectl apply -f ${GITHUB_WORKSPACE}/k8s/ingress-upstream.yaml
-            envsubst '$FULL_IMAGE_WITH_TAG $POD_NAME' < ${GITHUB_WORKSPACE}/k8s/deploy.yaml | kubectl apply -f -
+            kubectl apply -f ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/ingress-upstream.yaml
+            envsubst '$FULL_IMAGE_WITH_TAG $POD_NAME' < ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/deploy.yaml | kubectl apply -f -
             kubectl rollout restart deployment "section-project-deployment"
            
           }
