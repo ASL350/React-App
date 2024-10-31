@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE_PREFIX: registry.cloudzilla.ai/rc-project-b222d32444/
+  IMAGE_PREFIX: registry.cloudzilla.ai/rc-project-333d0e5664/
 
 jobs:
   cz-build-push:
@@ -22,7 +22,7 @@ jobs:
         uses: docker/login-action@v3
         with:
           registry: https://registry.cloudzilla.ai/
-          username: 'robot$rc-project-b222d32444+imageuser'
+          username: 'robot$rc-project-333d0e5664+imageuser'
           password: '${{ secrets.DOCKER_PASSWORD }}'
 
       - name: downcase REPO
@@ -89,7 +89,7 @@ jobs:
           SECTION_K8S_API_URL: '${{ secrets.SECTION_K8S_API_URL }}'
           SECTION_API_TOKEN: '${{ secrets.SECTION_API_TOKEN }}'
           DOCKER_SERVER: 'registry.cloudzilla.ai'
-          DOCKER_USERNAME: 'robot$rc-project-b222d32444+imageuser'
+          DOCKER_USERNAME: 'robot$rc-project-333d0e5664+imageuser'
           DOCKER_PASSWORD: '${{ secrets.DOCKER_PASSWORD }}'
           FULL_IMAGE_WITH_TAG: '${{ env.DOCKER_METADATA_OUTPUT_TAGS }}'
           POD_NAME: '${{ env.IMAGE_NAME }}'
@@ -97,20 +97,53 @@ jobs:
         run: |
           #!/bin/bash
           test -z "${DEBUG}" || set -o xtrace
-          set -o errexit
-
+          set +e  # revert the default `set -e` which github actions enable automatically
           cd "$(dirname "$0")"
 
           cert=/etc/ssl/certs/ca-certificates.crt
 
-          main() {
-            setCluster
+          # Reusable backoffretry function
+          backoffretry() {
+              local max_retries=$1     # Maximum number of retries
+              local delay=$2           # Initial delay in seconds
+              shift 2
+              local command="$@"       # Command to execute (e.g., main function)
+              local attempt=1          # Current attempt counter
 
-            kubectl create secret generic console-project-env-secret --from-env-file=${GITHUB_WORKSPACE}/.env --dry-run=client -o yaml | kubectl apply -f -
-            kubectl create secret docker-registry regcred --docker-server="${DOCKER_SERVER}" --docker-username="${DOCKER_USERNAME}" --docker-password="${DOCKER_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f -
-            kubectl apply -f ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/ingress-upstream.yaml
-            envsubst '$FULL_IMAGE_WITH_TAG $POD_NAME' < ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/deploy.yaml | kubectl apply -f -
-            kubectl rollout restart deployment "section-project-deployment"
+              while [ $attempt -le $max_retries ]; do
+                  echo "Attempt $attempt of $max_retries"
+
+                  # Execute the command
+                  $command
+                  local exit_code=$?
+
+                  if [ $exit_code -eq 0 ]; then
+                      echo "Success on attempt $attempt"
+                      return 0
+                  else
+                      echo "Failure on attempt $attempt with exit code $exit_code"
+                  fi
+
+                  if [ $attempt -lt $max_retries ]; then
+                      echo "Waiting for $delay seconds before retry..."
+                      sleep $delay
+                      delay=$((delay * 2)) # Exponential backoff
+                      attempt=$((attempt + 1))
+                  else
+                      echo "Exceeded maximum retries. Exiting with failure."
+                      return $exit_code
+                  fi
+              done
+          }
+
+          main() {
+            setCluster || return 1
+
+            kubectl create secret generic console-project-env-secret --from-env-file=${GITHUB_WORKSPACE}/.env --dry-run=client -o yaml | kubectl apply -f - || return 1
+            kubectl create secret docker-registry regcred --docker-server="${DOCKER_SERVER}" --docker-username="${DOCKER_USERNAME}" --docker-password="${DOCKER_PASSWORD}" --dry-run=client -o yaml | kubectl apply -f - || return 1
+            kubectl apply -f ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/ingress-upstream.yaml || return 1
+            envsubst '$FULL_IMAGE_WITH_TAG $POD_NAME' < ${GITHUB_WORKSPACE}/.github/workflows/cloudzilla/k8s/deploy.yaml | kubectl apply -f - || return 1
+            kubectl rollout restart deployment "section-project-deployment" || return 1
            
           }
 
@@ -124,15 +157,22 @@ jobs:
 
             kubectl config set-cluster section \
             --server=$SECTION_K8S_API_URL \
-            --certificate-authority=$cert
+            --certificate-authority=$cert || return 1
 
-            kubectl config set-credentials section-user --token=$SECTION_API_TOKEN
+            kubectl config set-credentials section-user --token=$SECTION_API_TOKEN || return 1
 
-            kubectl config set-context my-section-application --cluster=section --user=section-user --namespace=default
+            kubectl config set-context my-section-application --cluster=section --user=section-user --namespace=default || return 1
 
-            kubectl config use-context my-section-application
+            kubectl config use-context my-section-application || return 1
 
-            kubectl version
+            kubectl version || return 1
           }
-          main
-          "$@"
+
+          # Parameters for backoffretry
+          max_retries=4        # Maximum number of retries
+          initial_delay=10     # Initial delay before retrying in seconds
+
+          # Call backoffretry with the main function
+          backoffretry $max_retries $initial_delay main
+          exit_code=$?
+          exit $exit_code

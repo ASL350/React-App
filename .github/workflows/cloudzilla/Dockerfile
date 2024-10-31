@@ -5,8 +5,8 @@ WORKDIR /app
 # add `/app/node_modules/.bin` to $PATH
 ENV PATH /app/node_modules/.bin:$PATH
 
-# enable pnpm in case that is needed by the user
-RUN corepack enable pnpm
+# enable corepack for pnpm and newer yarn versions
+RUN corepack enable
 
 # install app dependencies
 COPY package.json yarn.lock* package-lock.json* pnpm-lock.yaml* ./
